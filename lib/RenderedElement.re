@@ -1,8 +1,5 @@
 open CoreTypes;
 
-/**
-      * Rendering produces a list of instance trees.
-      */
 type t('node, 'childNode) = Instance.renderedElement('node, 'childNode);
 type root('node, 'childNode) = {
   node: 'node,
@@ -25,11 +22,11 @@ let render = (root, children) => {
     nearestHostNode: lazy(Node(root.node)),
     absoluteSubtreeIndex: 0,
   };
-  Instance.ofList(~hostTreeState, children);
+  Instance.ofElement(~hostTreeState, children);
 };
 let update =
     (~renderedElement as {Update.payload, hostTreeUpdate}, nextElement) =>
-  Reconciler.updateInstanceSubtree(
+  Reconciler.updateInstanceForest(
     ~updateContext=
       Update.{
         hostTreeState: hostTreeUpdate,
@@ -40,24 +37,19 @@ let update =
     (),
   );
 
-let rec map = (f, renderedElement, nearestHostNode, nodeElement) =>
+let rec map = (f, renderedElement, hostTreeState) =>
   switch (renderedElement) {
   | IFlat(e) =>
-    let {Update.hostTreeUpdate, payload: opaqueInstance, enqueuedEffects} =
-      f(e, nearestHostNode, nodeElement);
-    let unchanged = e === opaqueInstance;
-
-    {
-      Update.hostTreeUpdate,
-      payload: unchanged ? renderedElement : IFlat(opaqueInstance),
-      enqueuedEffects,
-      childNodes: Seq.empty,
-    };
+    f(~hostTreeState, e)
+    |> Update.map(opaqueInstance => {
+         let unchanged = e === opaqueInstance;
+         unchanged ? renderedElement : IFlat(opaqueInstance);
+       })
   | INested(l, _) =>
     let update =
       List.fold_left(
         (acc, renderedElement) => {
-          let update = map(f, renderedElement, nearestHostNode, nodeElement);
+          let update = map(f, renderedElement, acc.Update.hostTreeUpdate);
           {
             ...update |> Update.map(next => [next, ...acc.Update.payload]),
             enqueuedEffects:
@@ -69,35 +61,27 @@ let rec map = (f, renderedElement, nearestHostNode, nodeElement) =>
         },
         {
           Update.payload: [],
-          hostTreeUpdate: {
-            nearestHostNode,
-            nodeElement,
-            absoluteSubtreeIndex: 0,
-          },
+          hostTreeUpdate: hostTreeState,
           enqueuedEffects: EffectSequence.noop,
           childNodes: Seq.empty,
         },
         List.rev(l),
       );
-    let unchanged = List.for_all2((===), l, update.payload);
-
     update
-    |> Update.map(nextL =>
+    |> Update.map(payload => {
+         let unchanged = List.for_all2((===), l, payload);
          unchanged
            ? renderedElement
-           : INested(nextL, update.hostTreeUpdate.absoluteSubtreeIndex)
-       );
+           : INested(payload, update.hostTreeUpdate.absoluteSubtreeIndex);
+       });
+
   | IDiffableSequence(instances, _l) =>
     instances.toSeq()
     |> Seq.fold_left(
          (acc, _instance) => {acc},
          {
            Update.payload: instances,
-           hostTreeUpdate: {
-             nearestHostNode,
-             nodeElement,
-             absoluteSubtreeIndex: 0,
-           },
+           hostTreeUpdate: hostTreeState,
            enqueuedEffects: EffectSequence.noop,
            childNodes: Seq.empty,
          },
@@ -111,12 +95,7 @@ let rec map = (f, renderedElement, nearestHostNode, nodeElement) =>
 let flushPendingUpdates =
     ({Update.payload: instanceForest, hostTreeUpdate, enqueuedEffects}) => {
   let update =
-    map(
-      Reconciler.flushPendingUpdates,
-      instanceForest,
-      hostTreeUpdate.nearestHostNode,
-      hostTreeUpdate.nodeElement,
-    );
+    map(Reconciler.flushPendingUpdates, instanceForest, hostTreeUpdate);
   {
     ...update,
     enqueuedEffects:

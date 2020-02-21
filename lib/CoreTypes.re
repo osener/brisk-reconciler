@@ -27,7 +27,10 @@ type element('node) =
   | Leaf(opaqueComponent('node))
   | StaticList(list(element('node)))
   | DiffableSequence(dynamicElement('node, element('node)))
-  | Movable(element('node), ref(option(instanceForest('node))))
+  | Movable(
+      element('node),
+      ref(option(memoizedMovableInstanceForest('node))),
+    )
 and component('a) = {
   debugName: string,
   id: componentId(instance('a)),
@@ -58,6 +61,10 @@ and opaqueComponent('node) =
 and instanceForest('node) =
   | IFlat(opaqueInstance('node))
   | INested(list(instanceForest('node)), subtreeSize)
+  | IMovable(
+      instanceForest('node),
+      ref(option(memoizedMovableInstanceForest('node))),
+    )
   | IDiffableSequence(
       dynamicElement('node, instanceForest('node)),
       subtreeSize,
@@ -82,10 +89,13 @@ and childrenType('viewSpec) =
               lazyHostNode('node),
             ),
           )
-  | React
-      : childrenType(
-          ('node, element('node), 'node, lazyHostNodeSeq('node)),
-        );
+  | React: childrenType(
+             ('node, element('node), 'node, lazyHostNodeSeq('node)),
+           )
+and memoizedMovableInstanceForest('node) = {
+  instanceForest: instanceForest('node),
+  key: int,
+};
 
 type opaqueInstanceHash('node) =
   Lazy.t(Hashtbl.t(int, (opaqueInstance('node), int)));

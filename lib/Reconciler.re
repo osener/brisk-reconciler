@@ -3,11 +3,13 @@ open CoreTypes;
 type subtreeUpdate('node) =
   | MatchingSubtree(list(subtreeUpdate('node)))
   | Update(opaqueInstance('node), opaqueComponent('node))
-  | ReRender(element('node))
+  | ReRender(instanceForest('node), element('node))
   | UpdateSequence(
       dynamicElement('node, instanceForest('node)),
       dynamicElement('node, element('node)),
-    );
+    )
+  | DeleteMovableInstanceForest(instanceForest('node), element('node))
+  | InsertMovableInstanceForest(instanceForest('node), element('node));
 
 let rec prepareUpdate = (~oldInstanceForest, ~nextElement) => {
   switch (oldInstanceForest, nextElement) {
@@ -24,15 +26,31 @@ let rec prepareUpdate = (~oldInstanceForest, ~nextElement) => {
     )
   | (IDiffableSequence(instances, _), DiffableSequence(elements)) =>
     UpdateSequence(instances, elements)
-  | _ => ReRender(nextElement)
+  | (
+      IMovable(instanceForest, instanceRef),
+      Movable(nextElement, elementRef),
+    )
+      when instanceRef === elementRef =>
+    prepareUpdate(~oldInstanceForest, ~nextElement)
+  | (
+      IMovable(instanceForest, instanceRef),
+      Movable(nextElement, elementRef),
+    ) =>
+    InsertedAndDeletedLOL(instanceForest, nextElement)
+  | (IMovable(instanceForest, _), _) =>
+    DeleteMovableInstanceForest(instanceForest, nextElement)
+  | (instanceForest, Movable(nextElement, elementRef)) =>
+    InsertMovableInstanceForest(instanceForest, nextElement)
+
+  | _ => ReRender(oldInstanceForest, nextElement)
   };
 };
 
 
 /**
-      * Initial render of an Element. Recurses to produce the entire tree of
-      * instances.
-      */
+  * Initial render of an Element. Recurses to produce the entire tree of
+  * instances.
+  */
 let rec renderElement:
   type parentNode node.
     (
@@ -51,8 +69,8 @@ and renderReactElement:
     (~updateContext: Update.context(parentNode, node), element(node)) =>
     Instance.renderedElement(parentNode, node) =
   (~updateContext, element) =>
-    Element.fold(
-      ~f=
+    Element.toRenderedElement(
+      ~mapper=
         (~hostTreeState, ~component) => {
           renderElement(
             ~updateContext={...updateContext, hostTreeState},
@@ -101,14 +119,10 @@ and updateOpaqueInstance:
         )
       ) {
       /*
-       * Case A: The next element *is* of the same component class.
+       * Case A: The nextComponent is the same as component.
        */
       | Some(handedInstance) =>
-        let {
-              Update.hostTreeUpdate,
-              payload: newOpaqueInstance,
-              enqueuedEffects,
-            } as ret =
+        let {Update.hostTreeUpdate, payload: newOpaqueInstance} as ret =
           updateInstance(
             ~originalOpaqueInstance,
             ~updateContext,
@@ -120,8 +134,9 @@ and updateOpaqueInstance:
         newOpaqueInstance === originalOpaqueInstance
           ? ret
           : {
+            ...ret,
             hostTreeUpdate: {
-              nodeElement: hostTreeUpdate.nodeElement,
+              ...hostTreeUpdate,
               nearestHostNode:
                 SubtreeChange.updateNodes(
                   ~nodeElement=hostTreeUpdate.nodeElement,
@@ -129,54 +144,35 @@ and updateOpaqueInstance:
                   ~children=Instance.outputTreeNodes(newOpaqueInstance),
                   ~position=hostTreeUpdate.absoluteSubtreeIndex,
                 ),
-              absoluteSubtreeIndex: hostTreeUpdate.absoluteSubtreeIndex,
             },
-            payload: newOpaqueInstance,
-            enqueuedEffects,
-            childNodes: [] |> List.to_seq,
           };
-      /*
-       * Case B: The next element is *not* of the same component class. We know
-       * because otherwise we would have observed the mutation on
-       * `nextComponentClass`.
-       */
       | None =>
         /**
-            * ** Switching component type **
-            */
-        let update =
-          Instance.ofOpaqueComponent(
-            ~hostTreeState=updateContext.hostTreeState,
-            ~component=nextOpaqueComponent,
-          )
-          |> Update.mapEffects(mountEffects =>
-               Instance.pendingEffects(
-                 ~lifecycle=Hooks.Effect.Unmount,
-                 ~nextEffects=mountEffects,
-                 ~instance,
-               )
-             );
-        let childNodes = Instance.outputTreeNodes(update.payload);
-        let {Update.hostTreeState} = updateContext;
-        {
-          hostTreeUpdate: {
-            nodeElement: hostTreeState.nodeElement,
-            nearestHostNode:
-              SubtreeChange.replaceSubtree(
-                ~nodeElement=hostTreeState.nodeElement,
-                ~parent=hostTreeState.nearestHostNode,
-                ~prevChildren=
-                  Instance.outputTreeNodes(originalOpaqueInstance),
-                ~nextChildren=childNodes,
-                ~absoluteSubtreeIndex=
-                  updateContext.hostTreeState.absoluteSubtreeIndex,
-              ),
-            absoluteSubtreeIndex: 0,
-          },
-          payload: update.payload,
-          enqueuedEffects: update.enqueuedEffects,
-          childNodes,
+          * ** Switching component type **
+          */
+
+        let hostTreeState = {
+          ...updateContext.hostTreeState,
+          nearestHostNode:
+            SubtreeChange.deleteNodes(
+              ~nodeElement=updateContext.hostTreeState.nodeElement,
+              ~parent=updateContext.hostTreeState.nearestHostNode,
+              ~children=Instance.outputTreeNodes(originalOpaqueInstance),
+              ~position=updateContext.hostTreeState.absoluteSubtreeIndex,
+            ),
         };
+
+        Instance.ofOpaqueComponent(
+          ~hostTreeState,
+          ~component=nextOpaqueComponent,
+        )
+        |> Update.mapEffects(mountEffects =>
+             Instance.pendingEffects(
+               ~lifecycle=Hooks.Effect.Unmount,
+               ~nextEffects=mountEffects,
+               ~instance,
+             )
+           );
       };
     };
   }
@@ -243,7 +239,7 @@ and updateInstance:
       switch (nextComponent.childrenType) {
       | React =>
         let {Update.payload: nextInstanceSubForest, enqueuedEffects} =
-          updateInstanceSubtree(
+          updateInstanceForest(
             ~updateContext,
             ~oldInstanceForest=childInstances,
             ~nextElement=nextSubElements,
@@ -296,7 +292,7 @@ and updateInstance:
           payload: nextInstanceSubForest,
           enqueuedEffects,
         } = {
-          updateInstanceSubtree(
+          updateInstanceForest(
             ~updateContext={
               Update.shouldExecutePendingUpdates:
                 updateContext.shouldExecutePendingUpdates,
@@ -452,11 +448,81 @@ and applyUpdate:
            },
          )
       |> Update.map(instances => IDiffableSequence(instances, 0))
-    | ReRender(element) => renderReactElement(~updateContext, element)
+    | ReRender(oldInstanceForest, element) =>
+      let updateTreeState = updateContext.hostTreeState;
+      let hostTreeState = {
+        Update.nodeElement: updateTreeState.nodeElement,
+        nearestHostNode:
+          SubtreeChange.deleteNodes(
+            ~nodeElement=updateTreeState.nodeElement,
+            ~parent=updateTreeState.nearestHostNode,
+            ~children=Instance.Forest.outputTreeNodes(oldInstanceForest),
+            ~position=updateTreeState.absoluteSubtreeIndex,
+          ),
+        absoluteSubtreeIndex: updateTreeState.absoluteSubtreeIndex,
+      };
+      renderReactElement(
+        ~updateContext={...updateContext, hostTreeState},
+        element,
+      );
+    | DeleteMovableInstanceForest(instanceForest, nextElement) =>
+      // DI: Current index of a deleted element in the udpate loop
+      // II: Current index of an inserted element in the udpate loop
+      // There are 5 possible cases:
+      // MOVE_BEHIND: DI > II
+      // MOVE_AHEAD: DI < II
+      // DELETED
+      // **future** CLONE_DELETE: An occurence has been removed (clones)
+      // **future** CLONE_INSERT: An occurence has been inserted (clones)
+      if (Hashtbl.mem(instances, instanceForest)) {
+        // MOVE_BEHIND
+        //   It means that we should already have it in our hashtbl
+        let updateTreeState = updateContext.hostTreeState;
+        // prepareUpdate for oldInstanceForest/newInstanceForest
+        let hostTreeState = {
+          Update.nodeElement: updateTreeState.nodeElement,
+          nearestHostNode:
+            SubtreeChange.reorder(
+              ~nodeElement=updateTreeState.nodeElement,
+              ~parent=updateTreeState.nearestHostNode,
+              ~instances=Instance.Forest.outputTreeNodes(oldInstanceForest),
+              ~indexShift=updateTreeState.absoluteSubtreeIndex,
+              ~from=0,
+              ~to_=1,
+            ),
+          // Increase absoluteSubtreeIndex by newTreeSize - oldTreeSize
+          absoluteSubtreeIndex: updateTreeState.absoluteSubtreeIndex,
+        };
+        renderReactElement(
+          ~updateContext={...updateContext, hostTreeState},
+          nextElement,
+        );
+      } else {
+        // MOVE_AHEAD or DELTED
+        //   We should add it to the hashtbl
+        Hashtbl.add(
+          movables,
+          instanceForest,
+          someKey,
+        );
+      }
+    | InsertMovableInstanceForest(instanceForest, nextElement) =>
+      {};
+      // There are three (four) possible cases:
+      // 4. FUTURE: An occurence has been removed or added (clones)
+      if (Hashtbl.has(instances, instanceForest)) {
+        // MOVE_AHEAD
+        // Increase absoluteSubtreeIndex by newTreeSize - oldTreeSize
+        SubtreeChange.reorder();
+      } else {
+        {
+          // MOVE_BEHIND or DELETED
+        };
+      };
     };
   }
 
-and updateInstanceSubtree:
+and updateInstanceForest:
   type parentNode node.
     (
       ~updateContext: Update.context(parentNode, node),
@@ -473,21 +539,13 @@ and updateInstanceSubtree:
   };
 
 /**
-      * Execute the pending updates at the top level of an instance tree.
-      * If no state change is performed, the argument is returned unchanged.
-      */
-let flushPendingUpdates = (opaqueInstance, nearestHostNode, nodeElement) => {
+  * Execute the pending updates at the top level of an instance tree.
+  * If no state change is performed, the argument is returned unchanged.
+  */
+let flushPendingUpdates = (~hostTreeState, opaqueInstance) => {
   let Instance({opaqueComponent}) = opaqueInstance;
   updateOpaqueInstance(
-    ~updateContext=
-      Update.{
-        shouldExecutePendingUpdates: true,
-        hostTreeState: {
-          nearestHostNode,
-          nodeElement,
-          absoluteSubtreeIndex: 0,
-        },
-      },
+    ~updateContext=Update.{shouldExecutePendingUpdates: true, hostTreeState},
     opaqueInstance,
     opaqueComponent,
   );

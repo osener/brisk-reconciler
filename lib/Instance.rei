@@ -1,16 +1,8 @@
 type opaqueInstanceUpdate('node, 'childNode) =
-  Update.t(
-    'node,
-    'childNode,
-    CoreTypes.opaqueInstance('childNode),
-  );
+  Update.t('node, 'childNode, CoreTypes.opaqueInstance('childNode));
 
 type renderedElement('node, 'childNode) =
-  Update.t(
-    'node,
-    'childNode,
-    CoreTypes.instanceForest('childNode),
-  );
+  Update.t('node, 'childNode, CoreTypes.instanceForest('childNode));
 
 let ofOpaqueComponent:
   (
@@ -19,7 +11,7 @@ let ofOpaqueComponent:
   ) =>
   opaqueInstanceUpdate('parentNode, 'node);
 
-let ofList:
+let ofElement:
   (
     ~hostTreeState: Update.hostTreeState('parentNode, 'node),
     Element.t('node)
@@ -36,3 +28,8 @@ let pendingEffects:
 
 let outputTreeNodes:
   CoreTypes.opaqueInstance('node) => CoreTypes.lazyHostNodeSeq('node);
+
+module Forest: {
+  type t('node) = CoreTypes.instanceForest('node);
+  let outputTreeNodes: t('node) => CoreTypes.lazyHostNodeSeq('node);
+};

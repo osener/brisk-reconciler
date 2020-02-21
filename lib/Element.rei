@@ -1,8 +1,8 @@
 type t('node) = CoreTypes.element('node);
 
-let fold:
+let toRenderedElement:
   (
-    ~f: (
+    ~mapper: (
           ~hostTreeState: Update.hostTreeState('a, 'b),
           ~component: CoreTypes.opaqueComponent('c)
         ) =>

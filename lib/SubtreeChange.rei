@@ -7,7 +7,7 @@ let insertNodes:
   ) =>
   CoreTypes.hostNode('node);
 
-let updateNodes:
+let deleteNodes:
   (
     ~nodeElement: CoreTypes.hostNodeElement('node, 'children),
     ~parent: CoreTypes.lazyHostNode('node),
@@ -16,13 +16,12 @@ let updateNodes:
   ) =>
   CoreTypes.lazyHostNode('node);
 
-let replaceSubtree:
+let updateNodes:
   (
     ~nodeElement: CoreTypes.hostNodeElement('node, 'children),
     ~parent: CoreTypes.lazyHostNode('node),
-    ~prevChildren: CoreTypes.lazyHostNodeSeq('children),
-    ~nextChildren: CoreTypes.lazyHostNodeSeq('children),
-    ~absoluteSubtreeIndex: int
+    ~children: CoreTypes.lazyHostNodeSeq('children),
+    ~position: int
   ) =>
   CoreTypes.lazyHostNode('node);
 

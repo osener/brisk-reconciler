@@ -1,12 +1,15 @@
 type t('node) = CoreTypes.element('node);
 
-let rec fold = (~f, ~init, renderedElement) => {
+let rec toRenderedElement = (~mapper, ~init, renderedElement) => {
   let foldSequence = (seq, container, add, wrapResult) => {
     let update =
       Seq.fold_left(
-        (update: Update.t(_, _, _), element) => {
-          // Append child nodes here
-          fold(~f, ~init=update.Update.hostTreeUpdate, element)
+        (update, element) => {
+          toRenderedElement(
+            ~mapper,
+            ~init=update.Update.hostTreeUpdate,
+            element,
+          )
           |> Update.map(payload => add(update.Update.payload, payload))
           |> Update.mapEffects(nextEffects =>
                EffectSequence.chain(
@@ -32,26 +35,30 @@ let rec fold = (~f, ~init, renderedElement) => {
          )
        );
   };
-  open CoreTypes;
-  switch (renderedElement) {
-  | Leaf(c) =>
-    f(~hostTreeState=init, ~component=c)
-    |> Update.map(instance => IFlat(instance))
-  | DiffableSequence(seq) =>
-    foldSequence(
-      seq.toSeq(),
-      seq.empty(),
-      (instances, instance) => instances.insert(instance),
-      (seq, length) => IDiffableSequence(seq, length),
-    )
-  | StaticList(l) =>
-    foldSequence(
-      List.rev(l) |> List.to_seq,
-      [],
-      (rest, h) => [h, ...rest],
-      (list, length) => INested(list, length),
-    )
+  CoreTypes.(
+    switch (renderedElement) {
+    | Leaf(c) =>
+      mapper(~hostTreeState=init, ~component=c)
+      |> Update.map(instance => IFlat(instance))
+    | DiffableSequence(seq) =>
+      foldSequence(
+        seq.toSeq(),
+        seq.empty(),
+        (instances, instance) => instances.insert(instance),
+        (seq, length) => IDiffableSequence(seq, length),
+      )
+    | StaticList(l) =>
+      foldSequence(
+        l |> List.to_seq,
+        [],
+        (rest, h) => [h, ...rest],
+        (list, length) => INested(List.rev(list), length),
+      )
 
-  | Movable(l, _) => fold(~f, ~init, l)
-  };
+    | Movable(element, ref) =>
+      let instanceForest = toRenderedElement(~mapper, ~init, element);
+      ref := Some(instanceForest.payload);
+      instanceForest;
+    }
+  );
 };

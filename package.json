@@ -20,9 +20,9 @@
     "ocaml": ">=4.4.0"
   },
   "devDependencies": {
-    "ocaml": "~4.8.0",
+    "ocaml": "~4.9.0",
     "@opam/merlin": "^3.2.2",
-    "@opam/merlin-lsp": "ocaml/merlin:merlin-lsp.opam#c8b0f03",
+    "@opam/ocaml-lsp-server": "ocaml/ocaml-lsp:ocaml-lsp-server.opam#007a1af",
     "@opam/ppx_deriving": "^4.2.1",
     "@opam/ocamlformat": "0.12",
     "@reason-native/rely": "^3.1.0"

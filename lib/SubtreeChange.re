@@ -49,29 +49,14 @@ let deleteNodes =
   newParent === oldParent ? parentWrapper : UpdatedNode(oldParent, newParent);
 };
 
-let replaceSubtree =
-    (
-      ~nodeElement,
-      ~parent,
-      ~prevChildren,
-      ~nextChildren,
-      ~absoluteSubtreeIndex: int,
-    ) =>
+let deleteNodes = (~nodeElement, ~parent, ~children, ~position) =>
   lazy(
-    {
-      insertNodes(
-        ~nodeElement,
-        ~parent=
-          deleteNodes(
-            ~nodeElement,
-            ~parent=Lazy.force(parent),
-            ~children=prevChildren,
-            ~position=absoluteSubtreeIndex,
-          ),
-        ~children=nextChildren,
-        ~position=absoluteSubtreeIndex,
-      );
-    }
+    deleteNodes(
+      ~nodeElement,
+      ~parent=Lazy.force(parent),
+      ~children,
+      ~position,
+    )
   );
 
 let reorderNode =

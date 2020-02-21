@@ -1,13 +1,21 @@
 open CoreTypes;
 
 type opaque('node) = CoreTypes.opaqueInstance('node);
-type forest('node) = CoreTypes.instanceForest('node);
 
 type opaqueInstanceUpdate('node, 'childNode) =
   Update.t('node, 'childNode, opaque('childNode));
 
 type renderedElement('node, 'childNode) =
   Update.t('node, 'childNode, instanceForest('childNode));
+
+let outputTreeNodes: type node. opaqueInstance(node) => lazyHostNodeSeq(node) =
+  (Instance(instance)) => {
+    switch (instance.component.childrenType) {
+    | React => instance.wrappedHostNode
+    | Host => Seq.((() => Cons(instance.wrappedHostNode, () => Nil)))
+    };
+  };
+
 
 let rec ofComponent:
   type parentNode hooks node children childNode wrappedHostNode.
@@ -36,7 +44,7 @@ let rec ofComponent:
          );
     switch (component.childrenType) {
     | React =>
-      let update = ofList(~hostTreeState, children_: element(childNode));
+      let update = ofElement(~hostTreeState, children_);
       update
       |> addMountEffects
       |> Update.map(childInstances =>
@@ -50,23 +58,26 @@ let rec ofComponent:
            })
          );
     | Host =>
-      let node =
-        lazy(
-          Node(
-            children_.make()
-            |> children_.configureInstance(~isFirstRender=true),
-          )
-        );
       let update =
-        ofList(
+        ofElement(
           ~hostTreeState={
-            nearestHostNode: node,
+            nearestHostNode:
+              lazy(
+                Node(
+                  children_.make()
+                  |> children_.configureInstance(~isFirstRender=true),
+                )
+              ),
             nodeElement: children_,
             absoluteSubtreeIndex: 0,
           },
           children_.children,
         )
-        |> addMountEffects
+        |> addMountEffects;
+
+      let node = update.hostTreeUpdate.nearestHostNode;
+      let update =
+        update
         |> Update.map(childInstances =>
              Instance({
                hooks,
@@ -77,6 +88,7 @@ let rec ofComponent:
                wrappedHostNode: node,
              })
            );
+
       let hostTreeUpdate = {
         ...hostTreeState,
         nearestHostNode:
@@ -84,7 +96,8 @@ let rec ofComponent:
             SubtreeChange.insertNodes(
               ~nodeElement=hostTreeState.nodeElement,
               ~parent=Lazy.force(hostTreeState.nearestHostNode),
-              ~children=[node] |> List.to_seq,
+              ~children=
+                [update.hostTreeUpdate.nearestHostNode] |> List.to_seq,
               ~position=hostTreeState.absoluteSubtreeIndex,
             )
           ),
@@ -112,7 +125,7 @@ and ofOpaqueComponent:
   ) =>
     ofComponent(~hostTreeState, opaqueComponent, component)
 
-and ofList:
+and ofElement:
   type parentNode node.
     (
       ~hostTreeState: Update.hostTreeState(parentNode, node),
@@ -120,21 +133,82 @@ and ofList:
     ) =>
     renderedElement(parentNode, node) =
   (~hostTreeState, syntheticElement) =>
-    Element.fold(~f=ofOpaqueComponent, ~init=hostTreeState, syntheticElement);
+    Element.toRenderedElement(
+      ~mapper=ofOpaqueComponent,
+      ~init=hostTreeState,
+      syntheticElement,
+    );
+
+module Forest = {
+  type t('node) = CoreTypes.instanceForest('node);
+
+  let rec fold:
+    type any. (~f: ('acc, opaque(any)) => 'acc, 'a, t(any)) => 'acc =
+    (~f, acc, instanceForest) => {
+      switch (instanceForest) {
+      | IFlat(opaqueInstance) => f(acc, opaqueInstance)
+      | INested(l, _) =>
+        List.fold_left(
+          (acc, instanceForest) => fold(~f, acc, instanceForest),
+          acc,
+          l,
+        )
+      | IDiffableSequence(l, _) =>
+        Seq.fold_left(
+          (acc, instanceForest) => fold(~f, acc, instanceForest),
+          acc,
+          l.toSeq(),
+        )
+      };
+    };
+
+  let pendingEffects = (~lifecycle, instanceForest) => {
+    let f = (acc, CoreTypes.Instance({hooks})) =>
+      EffectSequence.chain(
+        Hooks.pendingEffects(~lifecycle, Some(hooks)),
+        acc,
+      );
+    let rec fold: type any. (EffectSequence.t, t(any)) => EffectSequence.t =
+      (acc, instanceForest) => {
+        switch (instanceForest) {
+        | IFlat(Instance({childInstances}) as opaqueInstance) =>
+          f(fold(acc, childInstances), opaqueInstance)
+        | INested(l, _) =>
+          List.fold_left(
+            (acc, instanceForest) => fold(acc, instanceForest),
+            acc,
+            l,
+          )
+        | IDiffableSequence(l, _) =>
+          Seq.fold_left(
+            (acc, instanceForest) => fold(acc, instanceForest),
+            acc,
+            l.toSeq(),
+          )
+        };
+      };
+    fold(EffectSequence.noop, instanceForest);
+  };
+
+  let outputTreeNodes = forest => {
+    fold(
+      ~f=
+        (l, opaqueInstance) =>
+          [outputTreeNodes(opaqueInstance) |> List.of_seq, ...l],
+      [],
+      forest,
+    )
+    |> List.rev
+    |> List.flatten
+    |> List.to_seq;
+  };
+};
 
 let pendingEffects =
     (~lifecycle, ~nextEffects, ~instance as {childInstances, hooks}) => {
   EffectSequence.chain(
-    InstanceForest.pendingEffects(~lifecycle, childInstances)
+    Forest.pendingEffects(~lifecycle, childInstances)
     |> EffectSequence.chain(Hooks.pendingEffects(~lifecycle, Some(hooks))),
     nextEffects,
   );
 };
-
-let outputTreeNodes: type node. opaqueInstance(node) => lazyHostNodeSeq(node) =
-  (Instance(instance)) => {
-    switch (instance.component.childrenType) {
-    | React => instance.wrappedHostNode
-    | Host => Seq.((() => Cons(instance.wrappedHostNode, () => Nil)))
-    };
-  };
